@@ -1,9 +1,9 @@
-use crate::utils::is_process_elevated;
+use crate::utils::{is_process_elevated, to_wstring};
 
 use anyhow::{anyhow, Result};
 use indexmap::IndexMap;
 use std::{ffi::c_void, mem::size_of, path::PathBuf};
-use windows::core::{BOOL, PCWSTR, PWSTR};
+use windows::core::{w, BOOL, PCWSTR, PWSTR};
 use windows::Win32::{
     Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, HWND, LPARAM, MAX_PATH, POINT, RECT},
     Graphics::{
@@ -12,6 +12,7 @@ use windows::Win32::{
     },
     Storage::{
         EnhancedStorage::PKEY_AppUserModel_ID,
+        FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW},
         Packaging::Appx::{GetPackagePathByFullName, GetPackagesByPackageFamily},
     },
     System::{
@@ -368,6 +369,83 @@ pub fn get_window_exe(hwnd: HWND) -> Option<String> {
     }
     let module_path = get_module_path(pid)?;
     module_path.split('\\').map(|v| v.to_string()).next_back()
+}
+
+/// Human-friendly application name for the given executable path.
+/// Uses the executable's `FileDescription` version info; falls back to the
+/// file name without its `.exe` extension when the description is unavailable.
+pub fn get_app_name(module_path: &str) -> String {
+    // Chrome/Edge group keys are synthetic (e.g. "C:\...\chrome.exe::Profile1");
+    // resolve the real executable path before reading its version info.
+    let real_path = module_path.split("::").next().unwrap_or(module_path);
+    if let Some(desc) = get_file_description(real_path) {
+        let desc = desc.trim();
+        if !desc.is_empty() {
+            return desc.to_string();
+        }
+    }
+    let file_name = real_path.split('\\').next_back().unwrap_or(real_path);
+    if file_name.len() > 4 && file_name[file_name.len() - 4..].eq_ignore_ascii_case(".exe") {
+        file_name[..file_name.len() - 4].to_string()
+    } else {
+        file_name.to_string()
+    }
+}
+
+/// Reads the `FileDescription` string from the executable's version resource.
+fn get_file_description(module_path: &str) -> Option<String> {
+    let path = to_wstring(module_path);
+    let path_pcwstr = PCWSTR(path.as_ptr());
+    unsafe {
+        let size = GetFileVersionInfoSizeW(path_pcwstr, None);
+        if size == 0 {
+            return None;
+        }
+        let mut block = vec![0u8; size as usize];
+        GetFileVersionInfoW(path_pcwstr, Some(0), size, block.as_mut_ptr() as *mut c_void).ok()?;
+
+        // Determine the language/codepage of the string table.
+        let mut trans_ptr: *mut c_void = std::ptr::null_mut();
+        let mut trans_len: u32 = 0;
+        if !VerQueryValueW(
+            block.as_ptr() as *const c_void,
+            w!("\\VarFileInfo\\Translation"),
+            &mut trans_ptr,
+            &mut trans_len,
+        )
+        .as_bool()
+            || trans_ptr.is_null()
+            || trans_len < 4
+        {
+            return None;
+        }
+        let lang = *(trans_ptr as *const u16);
+        let codepage = *(trans_ptr as *const u16).add(1);
+
+        let sub_block = to_wstring(&format!(
+            "\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileDescription"
+        ));
+        let mut value_ptr: *mut c_void = std::ptr::null_mut();
+        let mut value_len: u32 = 0;
+        if !VerQueryValueW(
+            block.as_ptr() as *const c_void,
+            PCWSTR(sub_block.as_ptr()),
+            &mut value_ptr,
+            &mut value_len,
+        )
+        .as_bool()
+            || value_ptr.is_null()
+            || value_len == 0
+        {
+            return None;
+        }
+        let chars = std::slice::from_raw_parts(value_ptr as *const u16, value_len as usize);
+        Some(
+            String::from_utf16_lossy(chars)
+                .trim_end_matches('\0')
+                .to_string(),
+        )
+    }
 }
 
 pub fn set_foreground_window(hwnd: HWND) {

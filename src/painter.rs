@@ -2,14 +2,17 @@ use crate::app::SwitchAppsState;
 use crate::utils::{check_error, get_moinitor_rect, is_light_theme, is_win11};
 
 use anyhow::{Context, Result};
+use windows::core::w;
 use windows::Win32::{
     Foundation::{COLORREF, HWND, POINT, RECT, SIZE},
     Graphics::{
         Gdi::{
-            CreateCompatibleBitmap, CreateCompatibleDC, CreateRoundRectRgn, CreateSolidBrush,
-            DeleteDC, DeleteObject, FillRect, FillRgn, GetDC, ReleaseDC, SelectObject,
-            SetStretchBltMode, StretchBlt, AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION, HALFTONE,
-            HBITMAP, HDC, HPALETTE, SRCCOPY,
+            CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreateRoundRectRgn,
+            CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, FillRect, FillRgn, GetDC,
+            ReleaseDC, SelectObject, SetBkMode, SetStretchBltMode, SetTextColor, StretchBlt,
+            AC_SRC_ALPHA, AC_SRC_OVER, ANTIALIASED_QUALITY, BLENDFUNCTION, CLIP_DEFAULT_PRECIS,
+            DEFAULT_CHARSET, DT_CENTER, DT_NOPREFIX, DT_TOP, DT_WORDBREAK, HALFTONE, HBITMAP, HDC,
+            HPALETTE, OUT_DEFAULT_PRECIS, SRCCOPY, TRANSPARENT,
         },
         GdiPlus::{
             FillModeAlternate, GdipAddPathArc, GdipClosePathFigure, GdipCreateBitmapFromHBITMAP,
@@ -39,7 +42,14 @@ pub const ALPHA_MASK: u32 = 0xff000000;
 pub const ICON_SIZE_BASE: i32 = 64;
 pub const WINDOW_BORDER_SIZE_BASE: i32 = 10;
 pub const ICON_BORDER_SIZE_BASE: i32 = 4;
+pub const ICON_GAP_BASE: i32 = 12;
 pub const SCALE_FACTOR: i32 = 6;
+pub const LABEL_FONT_SIZE_BASE: i32 = 13;
+pub const LABEL_LINE_HEIGHT_BASE: i32 = 16;
+pub const LABEL_LINES: i32 = 2;
+pub const LABEL_TOP_GAP_BASE: i32 = 2;
+pub const TEXT_DARK_COLOR: u32 = 0x202020;
+pub const TEXT_LIGHT_COLOR: u32 = 0xf0f0f0;
 
 // GDI Antialiasing Painter
 pub struct GdiAAPainter {
@@ -77,6 +87,8 @@ impl GdiAAPainter {
         let icon_size_max = (ICON_SIZE_BASE as f64 * dpi_scale) as i32;
         let border_size = (WINDOW_BORDER_SIZE_BASE as f64 * dpi_scale) as i32;
         let icon_border = (ICON_BORDER_SIZE_BASE as f64 * dpi_scale) as i32;
+        let icon_gap = (ICON_GAP_BASE as f64 * dpi_scale) as i32;
+        let (label_height, label_font_size) = label_metrics(dpi_scale);
 
         let Coordinate {
             x,
@@ -85,15 +97,18 @@ impl GdiAAPainter {
             height,
             icon_size,
             item_size,
+            icon_cell,
         } = Coordinate::new(
             state.apps.len() as i32,
             icon_size_max,
             border_size,
             icon_border,
+            icon_gap,
+            label_height,
         );
 
         let corner_radius = if self.rounded_corner {
-            item_size / 4
+            icon_cell / 4
         } else {
             0
         };
@@ -101,7 +116,13 @@ impl GdiAAPainter {
         let hwnd = self.hwnd;
         let hdc_screen = self.hdc_screen;
 
-        let (fg_color, bg_color) = theme_color(is_light_theme());
+        let light_theme = is_light_theme();
+        let (fg_color, bg_color) = theme_color(light_theme);
+        let text_color = if light_theme {
+            TEXT_DARK_COLOR
+        } else {
+            TEXT_LIGHT_COLOR
+        };
 
         unsafe {
             let hdc_mem = CreateCompatibleDC(Some(hdc_screen));
@@ -144,7 +165,7 @@ impl GdiAAPainter {
             }
 
             let icons_width = item_size * state.apps.len() as i32;
-            let icons_height = item_size;
+            let icons_height = icon_cell + label_height;
             let bitmap_icons = draw_icons(
                 state,
                 hdc_screen,
@@ -155,6 +176,9 @@ impl GdiAAPainter {
                 corner_radius,
                 fg_color,
                 bg_color,
+                item_size,
+                label_font_size,
+                text_color,
             );
 
             let mut bitmap = GpBitmap::default();
@@ -230,23 +254,32 @@ impl GdiAAPainter {
         let icon_size_max = (ICON_SIZE_BASE as f64 * dpi_scale) as i32;
         let border_size = (WINDOW_BORDER_SIZE_BASE as f64 * dpi_scale) as i32;
         let icon_border = (ICON_BORDER_SIZE_BASE as f64 * dpi_scale) as i32;
+        let icon_gap = (ICON_GAP_BASE as f64 * dpi_scale) as i32;
+        let (label_height, _) = label_metrics(dpi_scale);
 
         let Coordinate {
-            x, y, item_size, ..
+            x,
+            y,
+            item_size,
+            icon_cell,
+            ..
         } = Coordinate::new(
             state.apps.len() as i32,
             icon_size_max,
             border_size,
             icon_border,
+            icon_gap,
+            label_height,
         );
 
         let xpos = cursor_pos.x - x;
         let ypos = cursor_pos.y - y;
 
         let cy = border_size;
+        let item_height = icon_cell + label_height;
         for (i, _) in state.apps.iter().enumerate() {
             let cx = border_size + item_size * (i as i32);
-            if xpos >= cx && xpos < cx + item_size && ypos >= cy && ypos < cy + item_size {
+            if xpos >= cx && xpos < cx + item_size && ypos >= cy && ypos < cy + item_height {
                 return Some(i);
             }
         }
@@ -336,13 +369,19 @@ fn draw_icons(
     corner_radius: i32,
     fg_color: u32,
     bg_color: u32,
+    item_size: i32,
+    label_font_size: i32,
+    text_color: u32,
 ) -> HBITMAP {
     let scaled_width = width * SCALE_FACTOR;
     let scaled_height = height * SCALE_FACTOR;
     let scaled_corner_radius = corner_radius * SCALE_FACTOR;
     let scaled_border_size = icon_border * SCALE_FACTOR;
     let scaled_icon_inner_size = icon_size * SCALE_FACTOR;
-    let scaled_icon_outer_size = scaled_icon_inner_size + scaled_border_size * 2;
+    let scaled_icon_cell = scaled_icon_inner_size + scaled_border_size * 2;
+    let scaled_pitch = item_size * SCALE_FACTOR;
+    // center the icon cell within its (wider) column pitch so the gap is even
+    let cell_offset = (scaled_pitch - scaled_icon_cell) / 2;
 
     unsafe {
         let hdc_tmp = CreateCompatibleDC(Some(hdc_screen));
@@ -365,18 +404,16 @@ fn draw_icons(
 
         FillRect(hdc_scaled, &rect, bg_brush);
 
-        for (i, (icon, _)) in state.apps.iter().enumerate() {
+        for (i, (icon, _, _)) in state.apps.iter().enumerate() {
+            let cell_left = scaled_pitch * (i as i32) + cell_offset;
+
             // draw the box for selected icon
             if i == state.index {
-                let left = scaled_icon_outer_size * (i as i32);
-                let top = 0;
-                let right = left + scaled_icon_outer_size;
-                let bottom = top + scaled_icon_outer_size;
                 let rgn = CreateRoundRectRgn(
-                    left,
-                    top,
-                    right,
-                    bottom,
+                    cell_left,
+                    0,
+                    cell_left + scaled_icon_cell,
+                    scaled_icon_cell,
                     scaled_corner_radius,
                     scaled_corner_radius,
                 );
@@ -384,7 +421,7 @@ fn draw_icons(
                 let _ = DeleteObject(rgn.into());
             }
 
-            let cx = scaled_border_size + scaled_icon_outer_size * (i as i32);
+            let cx = cell_left + scaled_border_size;
             let _ = DrawIconEx(
                 hdc_scaled,
                 cx,
@@ -396,6 +433,51 @@ fn draw_icons(
                 None,
                 DI_NORMAL,
             );
+        }
+
+        // draw the focused app's name under its own icon, within that icon's column
+        let label_top = scaled_icon_cell;
+        if scaled_height > label_top {
+            if let Some((_, _, name)) = state.apps.get(state.index) {
+                let mut text: Vec<u16> = name.encode_utf16().collect();
+                if !text.is_empty() {
+                    let face = w!("Segoe UI");
+                    let hfont = CreateFontW(
+                        -(label_font_size * SCALE_FACTOR),
+                        0,
+                        0,
+                        0,
+                        400,
+                        0,
+                        0,
+                        0,
+                        DEFAULT_CHARSET,
+                        OUT_DEFAULT_PRECIS,
+                        CLIP_DEFAULT_PRECIS,
+                        ANTIALIASED_QUALITY,
+                        0,
+                        face,
+                    );
+                    let old_font = SelectObject(hdc_scaled, hfont.into());
+                    SetBkMode(hdc_scaled, TRANSPARENT);
+                    SetTextColor(hdc_scaled, COLORREF(text_color));
+                    let cell_left = scaled_pitch * (state.index as i32) + cell_offset;
+                    let mut rect = RECT {
+                        left: cell_left,
+                        top: label_top,
+                        right: cell_left + scaled_icon_cell,
+                        bottom: scaled_height,
+                    };
+                    DrawTextW(
+                        hdc_scaled,
+                        text.as_mut_slice(),
+                        &mut rect,
+                        DT_CENTER | DT_WORDBREAK | DT_NOPREFIX | DT_TOP,
+                    );
+                    SelectObject(hdc_scaled, old_font);
+                    let _ = DeleteObject(hfont.into());
+                }
+            }
         }
 
         SetStretchBltMode(hdc_tmp, HALFTONE);
@@ -440,21 +522,34 @@ struct Coordinate {
     width: i32,
     height: i32,
     icon_size: i32,
+    /// Column pitch: icon cell plus the inter-icon gap.
     item_size: i32,
+    /// Square that holds the icon and its selection highlight (no gap).
+    icon_cell: i32,
 }
 
 impl Coordinate {
-    fn new(num_apps: i32, icon_size_max: i32, border_size: i32, icon_border: i32) -> Self {
+    fn new(
+        num_apps: i32,
+        icon_size_max: i32,
+        border_size: i32,
+        icon_border: i32,
+        icon_gap: i32,
+        label_height: i32,
+    ) -> Self {
         let monitor_rect = get_moinitor_rect();
         let monitor_width = monitor_rect.right - monitor_rect.left;
         let monitor_height = monitor_rect.bottom - monitor_rect.top;
 
-        let icon_size =
-            ((monitor_width - 2 * border_size) / num_apps - icon_border * 2).min(icon_size_max);
+        let icon_size = ((monitor_width - 2 * border_size) / num_apps
+            - icon_border * 2
+            - icon_gap)
+            .min(icon_size_max);
 
-        let item_size = icon_size + icon_border * 2;
+        let icon_cell = icon_size + icon_border * 2;
+        let item_size = icon_cell + icon_gap;
         let width = item_size * num_apps + border_size * 2;
-        let height = item_size + border_size * 2;
+        let height = icon_cell + label_height + border_size * 2;
         let x = monitor_rect.left + (monitor_width - width) / 2;
         let y = monitor_rect.top + (monitor_height - height) / 2;
 
@@ -465,6 +560,16 @@ impl Coordinate {
             height,
             icon_size,
             item_size,
+            icon_cell,
         }
     }
+}
+
+/// Returns `(label_height, label_font_size)` in device pixels for the given DPI scale.
+fn label_metrics(dpi_scale: f64) -> (i32, i32) {
+    let font_size = (LABEL_FONT_SIZE_BASE as f64 * dpi_scale) as i32;
+    let line_height = (LABEL_LINE_HEIGHT_BASE as f64 * dpi_scale) as i32;
+    let top_gap = (LABEL_TOP_GAP_BASE as f64 * dpi_scale) as i32;
+    let label_height = top_gap + line_height * LABEL_LINES;
+    (label_height, font_size)
 }

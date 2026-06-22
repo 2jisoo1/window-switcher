@@ -5,8 +5,9 @@ use crate::painter::GdiAAPainter;
 use crate::startup::Startup;
 use crate::trayicon::TrayIcon;
 use crate::utils::{
-    check_error, get_app_icon, get_foreground_window, get_window_user_data, is_iconic_window,
-    is_running_as_admin, list_windows, set_foreground_window, set_window_user_data,
+    check_error, get_app_icon, get_app_name, get_foreground_window, get_window_user_data,
+    is_iconic_window, is_running_as_admin, list_windows, set_foreground_window,
+    set_window_user_data,
 };
 
 use anyhow::{anyhow, Result};
@@ -244,7 +245,7 @@ impl App {
                 let hwnd = app
                     .switch_apps_state
                     .as_ref()
-                    .and_then(|state| state.apps.get(state.index).map(|(_, id)| *id))
+                    .and_then(|state| state.apps.get(state.index).map(|(_, id, _)| *id))
                     .unwrap_or_else(get_foreground_window);
                 app.switch_windows(hwnd, reverse)?;
                 app.cancel_switch_app();
@@ -423,7 +424,8 @@ impl App {
                         module_hwnd,
                     )
                 });
-            apps.push((*module_hicon, module_hwnd));
+            let app_name = get_app_name(module_path);
+            apps.push((*module_hicon, module_hwnd, app_name));
         }
         let num_apps = apps.len() as i32;
         if num_apps == 0 {
@@ -455,7 +457,7 @@ impl App {
 
     fn do_switch_app(&mut self) {
         if let Some(state) = self.switch_apps_state.take() {
-            if let Some((_, id)) = state.apps.get(state.index) {
+            if let Some((_, id, _)) = state.apps.get(state.index) {
                 set_foreground_window(*id);
             }
             self.painter.unpaint(state);
@@ -496,6 +498,6 @@ struct SwitchWindowsState {
 
 #[derive(Debug)]
 pub struct SwitchAppsState {
-    pub apps: Vec<(HICON, HWND)>,
+    pub apps: Vec<(HICON, HWND, String)>,
     pub index: usize,
 }
