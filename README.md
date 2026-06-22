@@ -25,10 +25,7 @@ iwr -useb https://raw.githubusercontent.com/sigoden/window-switcher/main/install
 
 ## Build from source
 
-This fork adds a feature: the focused app's name is shown under its icon in the
-`Alt+Tab` switcher. To build `window-switcher.exe` from source, see
-[docs/BUILD.md](docs/BUILD.md) (Korean) — it covers the Rust toolchain setup
-(MSVC or GNU) and the build/run steps.
+This fork adds a feature: the focused app's name is shown under its icon in the `Alt+Tab` switcher. To build `window-switcher.exe` from source, see [docs/BUILD.md](docs/BUILD.md) (Korean) — it covers the Rust toolchain setup (MSVC or GNU) and the build/run steps.
 
 ## Configuration
 
