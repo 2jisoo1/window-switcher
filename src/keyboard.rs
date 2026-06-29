@@ -123,6 +123,14 @@ unsafe extern "system" fn keyboard_proc(code: i32, w_param: WPARAM, l_param: LPA
             if is_key_pressed() && state.is_modifier_pressed {
                 let id = state.hotkey.id;
                 if scan_code == state.hotkey.code {
+                    // While the app-switch overlay is open, the switch-windows
+                    // hotkey (e.g. Alt+`) cycles the app selection backward,
+                    // mirroring macOS Cmd+`. Holding Shift flips it to forward.
+                    if id == SWITCH_WINDOWS_HOTKEY_ID && IS_SWITCHING_APPS {
+                        let reverse = if IS_SHIFT_PRESSED { 0 } else { 1 };
+                        send_action_message = Some((SWITCH_APPS_HOTKEY_ID, reverse, false));
+                        break;
+                    }
                     let reverse = if IS_SHIFT_PRESSED { 1 } else { 0 };
                     if id == SWITCH_APPS_HOTKEY_ID
                         || (id == SWITCH_WINDOWS_HOTKEY_ID && !IS_FOREGROUND_IN_BLACKLIST)
