@@ -541,9 +541,7 @@ impl Coordinate {
         let monitor_width = monitor_rect.right - monitor_rect.left;
         let monitor_height = monitor_rect.bottom - monitor_rect.top;
 
-        let icon_size = ((monitor_width - 2 * border_size) / num_apps
-            - icon_border * 2
-            - icon_gap)
+        let icon_size = ((monitor_width - 2 * border_size) / num_apps - icon_border * 2 - icon_gap)
             .min(icon_size_max);
 
         let icon_cell = icon_size + icon_border * 2;

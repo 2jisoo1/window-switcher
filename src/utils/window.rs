@@ -402,7 +402,13 @@ fn get_file_description(module_path: &str) -> Option<String> {
             return None;
         }
         let mut block = vec![0u8; size as usize];
-        GetFileVersionInfoW(path_pcwstr, Some(0), size, block.as_mut_ptr() as *mut c_void).ok()?;
+        GetFileVersionInfoW(
+            path_pcwstr,
+            Some(0),
+            size,
+            block.as_mut_ptr() as *mut c_void,
+        )
+        .ok()?;
 
         // Determine the language/codepage of the string table.
         let mut trans_ptr: *mut c_void = std::ptr::null_mut();
